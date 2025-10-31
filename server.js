@@ -18,30 +18,42 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(morgan('dev'));
 
-// Initialize Firebase Admin
-let serviceAccount;
+// Initialize Firebase Admin (non-fatal on serverless)
+let firebaseReady = false;
 try {
-  serviceAccount = {
-    type: 'service_account',
-    project_id: process.env.FIREBASE_PROJECT_ID,
-    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-    private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    client_email: process.env.FIREBASE_CLIENT_EMAIL,
-    client_id: process.env.FIREBASE_CLIENT_ID,
-    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-    token_uri: 'https://oauth2.googleapis.com/token',
-    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-    client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL
-  };
+  const hasAll = [
+    process.env.FIREBASE_PROJECT_ID,
+    process.env.FIREBASE_PRIVATE_KEY,
+    process.env.FIREBASE_CLIENT_EMAIL,
+  ].every(Boolean);
+  if (!hasAll) {
+    console.warn('Firebase Admin env incomplete. Skipping Firebase initialization.');
+  } else if (admin.apps.length === 0) {
+    const privKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+    const serviceAccount = {
+      type: 'service_account',
+      project_id: process.env.FIREBASE_PROJECT_ID,
+      private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+      private_key: privKey,
+      client_email: process.env.FIREBASE_CLIENT_EMAIL,
+      client_id: process.env.FIREBASE_CLIENT_ID,
+      auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+      token_uri: 'https://oauth2.googleapis.com/token',
+      auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+      client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+    };
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`
-  });
-  console.log('Firebase Admin initialized successfully');
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`,
+    });
+    firebaseReady = true;
+    console.log('Firebase Admin initialized successfully');
+  } else {
+    firebaseReady = true;
+  }
 } catch (error) {
-  console.error('Firebase Admin initialization error:', error);
-  process.exit(1);
+  console.error('Firebase Admin initialization error (non-fatal):', error);
 }
 
 // Database connection
@@ -60,7 +72,7 @@ const connectDB = async () => {
     console.log('MongoDB connected successfully');
   } catch (error) {
     console.error('MongoDB connection error:', error);
-    process.exit(1);
+    // Do not exit in serverless; leave connection as not ready
   }
 };
 
@@ -72,6 +84,7 @@ app.get('/', (req, res) => {
     message: 'Welcome to Mae Organics API',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
+    firebase: firebaseReady ? 'READY' : 'NOT_READY',
     timestamp: new Date().toISOString()
   });
 });
@@ -84,6 +97,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'UP',
     database: mongoose.connection.readyState === 1 ? 'CONNECTED' : 'DISCONNECTED',
+    firebase: firebaseReady ? 'READY' : 'NOT_READY',
     timestamp: new Date().toISOString()
   });
 });
@@ -196,8 +210,6 @@ app.use((err, req, res, next) => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled Rejection:', err);
-  // Close server & exit process
-  server.close(() => process.exit(1));
 });
 
 // Start server
@@ -209,13 +221,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled Rejection:', err);
-  server.close(() => process.exit(1));
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
-  process.exit(1);
 });
 
 // Handle SIGTERM
