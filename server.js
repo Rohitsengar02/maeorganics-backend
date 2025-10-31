@@ -56,21 +56,23 @@ try {
   console.error('Firebase Admin initialization error (non-fatal):', error);
 }
 
-// Database connection
+// Database connection (cached for serverless)
+let lastMongoError = null;
 const connectDB = async () => {
   try {
+    const cached = globalThis.__mongooseConn;
+    if (cached && mongoose.connection.readyState === 1) {
+      return; // already connected
+    }
+    // Keep options minimal; SRV string carries TLS settings
     await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      ssl: true,
-      sslValidate: true,
-      maxPoolSize: 50,
-      family: 4
+      serverSelectionTimeoutMS: 8000,
     });
+    globalThis.__mongooseConn = mongoose.connection;
+    lastMongoError = null;
     console.log('MongoDB connected successfully');
   } catch (error) {
+    lastMongoError = error?.message || String(error);
     console.error('MongoDB connection error:', error);
     // Do not exit in serverless; leave connection as not ready
   }
@@ -98,8 +100,24 @@ app.get('/health', (req, res) => {
     status: 'UP',
     database: mongoose.connection.readyState === 1 ? 'CONNECTED' : 'DISCONNECTED',
     firebase: firebaseReady ? 'READY' : 'NOT_READY',
+    readyState: mongoose.connection.readyState,
+    mongoError: lastMongoError ? String(lastMongoError).slice(0, 300) : undefined,
     timestamp: new Date().toISOString()
   });
+});
+
+// Active DB ping to test connectivity at runtime
+app.get('/health/db', async (req, res) => {
+  try {
+    await connectDB();
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ ok: false, readyState: mongoose.connection.readyState, error: lastMongoError || 'not connected' });
+    }
+    const pong = await mongoose.connection.db.admin().ping();
+    return res.json({ ok: true, pong });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 // Simple frontend status page
