@@ -10,10 +10,30 @@ const path = require('path');
 const app = express();
 
 // Middleware
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.NEXT_PUBLIC_FRONTEND_URL,
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:9002',
+  'https://maeorganics.vercel.app',
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // allow non-browser or same-origin
+    const isAllowed =
+      allowedOrigins.includes(origin) || /\.vercel\.app$/.test(origin);
+    if (isAllowed) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
+
+// Ensure preflight handled
+app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(morgan('dev'));
